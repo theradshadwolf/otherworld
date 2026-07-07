@@ -13,6 +13,35 @@
 const VENICE_API_KEY = "VENICE_INFERENCE_KEY_9ko3LqoOWUN4ZCLx_HSD1LCGFXM957xgknxx1QejS8";
 const VENICE_BASE_URL = "https://api.venice.ai/api/v1";
 
+// ==========================================
+// IMAGE CACHING SYSTEM (24hr cache expiry)
+// ==========================================
+const IMAGE_CACHE = new Map();
+const CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function getCacheKey(prompt) {
+  return `img_${prompt.substring(0, 50).replace(/\s+/g, '_')}`;
+}
+
+function getFromCache(prompt) {
+  const key = getCacheKey(prompt);
+  const cached = IMAGE_CACHE.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_EXPIRY_MS) {
+    console.log("✨ Using cached image for:", prompt.substring(0, 30));
+    return cached.imageUrl;
+  }
+  return null;
+}
+
+function saveToCache(prompt, imageUrl) {
+  const key = getCacheKey(prompt);
+  IMAGE_CACHE.set(key, {
+    imageUrl: imageUrl,
+    timestamp: Date.now()
+  });
+  console.log("💾 Cached image for 24 hours:", prompt.substring(0, 30));
+}
+
 window.micInitialized = false;
 window.globalAudioStream = null;
 
@@ -296,7 +325,9 @@ AFRAME.registerComponent('audio-ai-node', {
     inputField.focus();
     
     const cleanup = () => {
-      document.body.removeChild(overlay);
+      if (document.body.contains(overlay)) {
+        document.body.removeChild(overlay);
+      }
     };
     
     submitBtn.onclick = () => {
@@ -546,41 +577,84 @@ Return ONLY valid JSON in this exact format:
     speakText(`Manifesting: ${envData.manifesto}`);
 
     try {
-      const imgResponse = await fetchWithRetry(`${VENICE_BASE_URL}/image/generate`, { 
-        method: 'POST', 
-        headers: { 
-          'Authorization': `Bearer ${VENICE_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'flux-2-pro',
-          prompt: envData.imagePrompt,
-          width: 1024,
-          height: 512,
-          seed: Math.floor(Math.random() * 1000000),
-          cfg_scale: 7.5,
-          steps: 30,
-          format: 'png',
-          safe_mode: false
-        })
-      });
+      // Check cache first
+      let imageUrl = getFromCache(envData.imagePrompt);
+      
+      if (!imageUrl) {
+        // Not in cache, call API
+        const imgResponse = await fetchWithRetry(`${VENICE_BASE_URL}/image/generate`, { 
+          method: 'POST', 
+          headers: { 
+            'Authorization': `Bearer ${VENICE_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: 'flux-2-pro',
+            prompt: envData.imagePrompt,
+            width: 1024,
+            height: 512,
+            seed: Math.floor(Math.random() * 1000000),
+            num_inference_steps: 30,
+            guidance_scale: 7.5
+          })
+        });
 
-      if (!imgResponse.images || !imgResponse.images.length) {
-        throw new Error("No images in response");
+        console.log("Venice API Response:", imgResponse);
+
+        // Handle multiple response formats from Venice API
+        if (imgResponse.image_url) {
+          // Single direct URL
+          imageUrl = imgResponse.image_url;
+        } else if (imgResponse.images && imgResponse.images.length > 0) {
+          // Array of images (base64 or URL)
+          const img = imgResponse.images[0];
+          if (typeof img === 'string') {
+            // Direct string (base64 or URL)
+            imageUrl = img;
+          } else if (img.url) {
+            imageUrl = img.url;
+          } else if (img.b64_json) {
+            imageUrl = `data:image/png;base64,${img.b64_json}`;
+          }
+        } else if (imgResponse.data && imgResponse.data.length > 0) {
+          // OpenAI format
+          const img = imgResponse.data[0];
+          if (img.url) {
+            imageUrl = img.url;
+          } else if (img.b64_json) {
+            imageUrl = `data:image/png;base64,${img.b64_json}`;
+          }
+        }
+
+        if (!imageUrl) {
+          console.error("Could not extract image from response:", imgResponse);
+          throw new Error("No image in Venice API response - format unknown");
+        }
+
+        // Ensure it's a proper data URL if it's base64
+        if (!imageUrl.startsWith('data:') && !imageUrl.startsWith('http')) {
+          imageUrl = `data:image/png;base64,${imageUrl}`;
+        }
+
+        // Save to cache
+        saveToCache(envData.imagePrompt, imageUrl);
       }
 
-      const base64Image = imgResponse.images[0];
-      const imageUrl = `data:image/png;base64,${base64Image}`;
-
+      // Preload and validate image
       const img = new Image();
+      img.crossOrigin = "anonymous";
+      
       await new Promise((resolve, reject) => {
         img.onload = resolve;
-        img.onerror = reject;
+        img.onerror = () => reject(new Error("Image failed to load"));
         img.src = imageUrl;
       });
 
+      // Apply to sky
       this.skyEl.setAttribute('src', imageUrl);
       this.skyEl.removeAttribute('color');
+      
+      // Update environment
       this.ambientLight.setAttribute('light', 'color', envData.ambientColorHex);
       this.sceneEl.setAttribute('fog', `type: exponential; color: ${envData.fogColorHex}; density: ${envData.fogDensity}`);
       this.spawnParticles(envData.particleColorHex);
