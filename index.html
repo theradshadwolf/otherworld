@@ -546,7 +546,6 @@ Return ONLY valid JSON in this exact format:
     speakText(`Manifesting: ${envData.manifesto}`);
 
     try {
-      // FIX: Use correct model name and response format
       const imgResponse = await fetchWithRetry(`${VENICE_BASE_URL}/image/generate`, { 
         method: 'POST', 
         headers: { 
@@ -554,10 +553,10 @@ Return ONLY valid JSON in this exact format:
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'flux-dev-uncensored',  // Changed from flux-dev
+          model: 'flux-2-pro',
           prompt: envData.imagePrompt,
           width: 1024,
-          height: 512,  // 2:1 ratio for equirectangular
+          height: 512,
           seed: Math.floor(Math.random() * 1000000),
           cfg_scale: 7.5,
           steps: 30,
@@ -566,29 +565,22 @@ Return ONLY valid JSON in this exact format:
         })
       });
 
-      // FIX: Venice returns base64 images array, not a URL
       if (!imgResponse.images || !imgResponse.images.length) {
         throw new Error("No images in response");
       }
 
-      // Convert base64 to data URL
       const base64Image = imgResponse.images[0];
       const imageUrl = `data:image/png;base64,${base64Image}`;
 
-      // Preload image before applying to sky
       const img = new Image();
-      
       await new Promise((resolve, reject) => {
         img.onload = resolve;
         img.onerror = reject;
         img.src = imageUrl;
       });
 
-      // Apply to sky
       this.skyEl.setAttribute('src', imageUrl);
       this.skyEl.removeAttribute('color');
-
-      // Update environment
       this.ambientLight.setAttribute('light', 'color', envData.ambientColorHex);
       this.sceneEl.setAttribute('fog', `type: exponential; color: ${envData.fogColorHex}; density: ${envData.fogDensity}`);
       this.spawnParticles(envData.particleColorHex);
