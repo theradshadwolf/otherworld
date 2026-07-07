@@ -42,10 +42,160 @@ function saveToCache(prompt, imageUrl) {
   console.log("💾 Cached image for 24 hours:", prompt.substring(0, 30));
 }
 
+// ==========================================
+// QUEST-OPTIMIZED VOICE RECOGNITION SYSTEM
+// ==========================================
+function isQuestBrowser() {
+  const ua = navigator.userAgent;
+  return /Meta|Oculus|Quest|MSFT_PPE/.test(ua) && /VR/.test(ua);
+}
+
+function getVoiceRecognitionAPI() {
+  // Detect best available speech recognition for platform
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition || window.mozSpeechRecognition || window.msSpeechRecognition;
+  
+  if (SpeechRecognition) {
+    console.log("🎤 Web Speech API available");
+    return SpeechRecognition;
+  }
+  
+  // Quest-specific fallback (if native Speech API exists)
+  if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+    console.log("🎯 Quest/VR browser detected - will use audio stream transcription");
+    return null;
+  }
+  
+  return null;
+}
+
+async function transcribeAudioBlob(audioBlob, displayCallback) {
+  try {
+    // Placeholder for future: integrate with real transcription service
+    // For now, use Web Speech API as fallback
+    const formData = new FormData();
+    formData.append('audio', audioBlob);
+    
+    console.log("🎙️ Attempting transcription of audio blob:", audioBlob.size, "bytes");
+    
+    // This would integrate with a transcription API (e.g., AssemblyAI, DeepGram, etc.)
+    // For now, we'll use Web Speech API on the recorded audio
+    throw new Error("Blob transcription not yet configured - falling back to live recognition");
+  } catch (error) {
+    console.log("📢 Blob transcription unavailable, using live recognition fallback");
+    throw error;
+  }
+}
+
+async function questOptimizedVoiceInput(displayCallback, nodeContext) {
+  return new Promise((resolve, reject) => {
+    const SpeechRecognition = getVoiceRecognitionAPI();
+    
+    if (!SpeechRecognition) {
+      reject(new Error("Speech Recognition API not available"));
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    
+    // Quest-optimized settings
+    recognition.lang = 'en-US';
+    recognition.continuous = false;
+    recognition.interimResults = true; // Show live text as user speaks
+    recognition.maxAlternatives = 3; // Get multiple candidates for best accuracy
+    
+    let interimTranscript = '';
+    let finalTranscript = '';
+    let recognitionTimeout;
+    
+    // Visual feedback for active listening
+    recognition.onstart = () => {
+      console.log("🎙️ Quest Voice Recognition: LISTENING");
+      if (displayCallback) displayCallback('🎙️ Listening (Quest VR)...\nSpeak now', nodeContext);
+      interimTranscript = '';
+      
+      // Auto-timeout after 10 seconds of silence
+      recognitionTimeout = setTimeout(() => {
+        if (!finalTranscript && !interimTranscript) {
+          recognition.abort();
+          reject(new Error("No speech detected"));
+        }
+      }, 10000);
+    };
+
+    recognition.onresult = (event) => {
+      clearTimeout(recognitionTimeout);
+      interimTranscript = '';
+      
+      // Collect all results
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        const confidence = event.results[i][0].confidence;
+        
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript + ' ';
+          console.log(`✅ Final: "${transcript}" (${(confidence * 100).toFixed(1)}%)`);
+        } else {
+          interimTranscript += transcript;
+          console.log(`📝 Interim: "${transcript}"`);
+        }
+      }
+      
+      // Update display with live transcription
+      const displayText = finalTranscript || interimTranscript || '🎙️ Listening...';
+      if (displayCallback) displayCallback(`🎙️ Quest VR Input:\n"${displayText}"`, nodeContext);
+    };
+
+    recognition.onerror = (event) => {
+      clearTimeout(recognitionTimeout);
+      console.error("🔴 Voice Recognition Error:", event.error);
+      
+      // Map error codes to user-friendly messages
+      const errorMap = {
+        'no-speech': 'No speech detected. Try again.',
+        'audio-capture': 'No microphone access. Check Quest audio settings.',
+        'network': 'Network error. Check connection.',
+        'aborted': 'Voice input cancelled.',
+        'service-not-allowed': 'Speech service not available.',
+        'bad-grammar': 'Grammar error. Speak clearly.',
+        'permission-denied': 'Microphone permission denied.'
+      };
+      
+      const errorMsg = errorMap[event.error] || `Error: ${event.error}`;
+      reject(new Error(errorMsg));
+    };
+
+    recognition.onend = () => {
+      clearTimeout(recognitionTimeout);
+      console.log("🛑 Voice Recognition Ended");
+      
+      if (finalTranscript.trim()) {
+        console.log(`🎯 Final Result: "${finalTranscript.trim()}"`);
+        resolve(finalTranscript.trim());
+      } else if (interimTranscript.trim()) {
+        console.log(`⚠️ Partial Result: "${interimTranscript.trim()}"`);
+        resolve(interimTranscript.trim());
+      } else {
+        reject(new Error("No speech input received"));
+      }
+    };
+
+    try {
+      recognition.start();
+    } catch (e) {
+      console.error("Failed to start recognition:", e);
+      reject(e);
+    }
+  });
+}
+
 window.micInitialized = false;
 window.globalAudioStream = null;
+window.isQuestVR = isQuestBrowser();
 
 document.addEventListener('DOMContentLoaded', () => {
+  console.log("🌍 Otherworld Engine Initializing...");
+  console.log("🥽 Quest Browser Detected:", window.isQuestVR);
+  
   const btn = document.getElementById('init-mic-btn');
   if(btn) {
     btn.addEventListener('click', async () => {
@@ -244,7 +394,7 @@ AFRAME.registerComponent('audio-ai-node', {
       this.mediaRecorder.onstop = async () => {
         this.isFetching = true;
         this.el.setAttribute('material', 'emissive', '#FFFFFF');
-        this.textDisplay.setAttribute('value', '⚙️ Processing Audio...\n(Sending to Venice AI)');
+        this.textDisplay.setAttribute('value', '⚙️ Processing Audio...\n(Using Quest Voice Engine)');
 
         const audioBlob = new Blob(this.audioChunks, { type: this.mediaRecorder.mimeType || 'audio/webm' });
 
@@ -254,7 +404,8 @@ AFRAME.registerComponent('audio-ai-node', {
           return;
         }
 
-        await this.attemptTranscriptionFallback();
+        // Use Quest-optimized voice recognition
+        await this.attemptQuestVoiceInput();
       };
 
       this.mediaRecorder.start();
@@ -268,9 +419,38 @@ AFRAME.registerComponent('audio-ai-node', {
     });
   },
 
+  attemptQuestVoiceInput: async function() {
+    try {
+      const updateDisplay = (msg) => {
+        this.textDisplay.setAttribute('value', msg);
+      };
+
+      this.textDisplay.setAttribute('value', `🥽 Quest Voice Recognition:\nPress and speak...`);
+      speakText("Speak your request now.");
+
+      const text = await questOptimizedVoiceInput(updateDisplay, this);
+
+      if (!text || text.trim().length === 0) {
+        throw new Error("No voice input received");
+      }
+
+      this.textDisplay.setAttribute('value', `⚙️ Processing Text:\n"${text}"`);
+
+      if (this.data.type === 'oracle') {
+        await this.processOracleText(text);
+      } else {
+        await this.processRealityText(text);
+      }
+    } catch (e) {
+      console.error("Quest Voice Input Failed:", e);
+      this.textDisplay.setAttribute('value', `⚠️ Voice failed: ${e.message}\nExecuting Auto-Vision...`);
+      await this.attemptAutoVisionFallback();
+    }
+  },
+
   attemptTranscriptionFallback: async function() {
     try {
-      await new Promise(res => setTimeout(res, 500)); // Reduced delay
+      await new Promise(res => setTimeout(res, 500));
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechRecognition) throw new Error("Transcription API not supported on this firmware.");
 
