@@ -1,868 +1,696 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Audio-Native Split-Reality AI – Meta Quest VR (Venice Edition)</title>
-
-<script src="https://aframe.io/releases/1.6.0/aframe.min.js" crossorigin="anonymous"></script>
-<script>
-// ==========================================
-// VENICE AI CONFIGURATION - HARDWIRED
-// ==========================================
-const VENICE_API_KEY = "VENICE_INFERENCE_KEY_9ko3LqoOWUN4ZCLx_HSD1LCGFXM957xgknxx1QejS8";
-const VENICE_BASE_URL = "https://api.venice.ai/api/v1";
-
-// ==========================================
-// IMAGE CACHING SYSTEM (24hr cache expiry)
-// ==========================================
-const IMAGE_CACHE = new Map();
-const CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-function getCacheKey(prompt) {
-  return `img_${prompt.substring(0, 50).replace(/\s+/g, '_')}`;
-}
-
-function getFromCache(prompt) {
-  const key = getCacheKey(prompt);
-  const cached = IMAGE_CACHE.get(key);
-  if (cached && Date.now() - cached.timestamp < CACHE_EXPIRY_MS) {
-    console.log("✨ Using cached image for:", prompt.substring(0, 30));
-    return cached.imageUrl;
-  }
-  return null;
-}
-
-function saveToCache(prompt, imageUrl) {
-  const key = getCacheKey(prompt);
-  IMAGE_CACHE.set(key, {
-    imageUrl: imageUrl,
-    timestamp: Date.now()
-  });
-  console.log("💾 Cached image for 24 hours:", prompt.substring(0, 30));
-}
-
-window.micInitialized = false;
-window.globalAudioStream = null;
-
-document.addEventListener('DOMContentLoaded', () => {
-  const btn = document.getElementById('init-mic-btn');
-  if(btn) {
-    btn.addEventListener('click', async () => {
-      btn.innerText = "Requesting Microphone...";
-      try {
-        window.globalAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        window.micInitialized = true;
-        btn.innerText = "🎤 Mic Ready! You can enter VR.";
-        btn.style.backgroundColor = "#00FF99";
-        btn.style.color = "#000";
-      } catch (err) {
-        console.error("Mic init error:", err);
-        btn.innerText = "⚠️ Mic Access Denied - Using Text Mode";
-        btn.style.backgroundColor = "#FF0055";
-      }
-    });
-  }
-
-  if (window.self !== window.top) {
-    const breakoutBtn = document.createElement('button');
-    breakoutBtn.innerText = "🚀 Open in New Tab (Required for VR)";
-    breakoutBtn.id = "breakout-btn";
-    breakoutBtn.onclick = () => window.open(window.location.href, '_blank');
-    document.getElementById('vr-ui-overlay').appendChild(breakoutBtn);
-  }
-});
-
-async function fetchWithRetry(url, options, retries = 5) {
-  const delays = [1000, 2000, 4000, 8000, 16000];
-  for (let i = 0; i < retries; i++) {
-    try {
-      const response = await fetch(url, options);
-      if (!response.ok) {
-        const errorData = await response.text();
-        throw new Error(`HTTP error! Status: ${response.status}, Details: ${errorData}`);
-      }
-      return await response.json();
-    } catch (error) {
-      if (i === retries - 1) throw error;
-      await new Promise(res => setTimeout(res, delays[i]));
-    }
-  }
-}
-
-function blobToBase64(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result.split(',')[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-}
-
-async function speakTextWithVenice(text) {
-  try {
-    const response = await fetch(`${VENICE_BASE_URL}/audio/speech`, { 
-      method: 'POST', 
-      headers: { 
-        'Authorization': `Bearer ${VENICE_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: "tts-1",
-        input: text,
-        voice: "alloy"
-      })
-    });
-
-    if (!response.ok) throw new Error("TTS API failed");
-
-    const audioBlob = await response.blob();
-    const audioUrl = URL.createObjectURL(audioBlob);
-    const audio = new Audio(audioUrl);
-    audio.play();
-
-  } catch (error) {
-    console.warn("Venice TTS failed, using fallback:", error);
-    speakTextFallback(text);
-  }
-}
-
-function speakTextFallback(text) {
-  try {
-    if ('speechSynthesis' in window) {
-      const synth = window.speechSynthesis;
-      const utterance = new SpeechSynthesisUtterance(text);
-      let voices = synth.getVoices();
-
-      const playVoice = () => {
-        const femaleVoice = voices.find(voice =>
-          voice.name.toLowerCase().includes('female') ||
-          voice.name.toLowerCase().includes('zira') ||
-          voice.name.toLowerCase().includes('samantha') ||
-          voice.name.toLowerCase().includes('victoria') ||
-          voice.name.toLowerCase().includes('karen')
-        );
-        if (femaleVoice) utterance.voice = femaleVoice;
-        utterance.pitch = 1.2;
-        utterance.rate = 0.95;
-        synth.speak(utterance);
-      };
-
-      if (voices.length === 0) {
-        synth.onvoiceschanged = () => { voices = synth.getVoices(); playVoice(); };
-      } else {
-        playVoice();
-      }
-    }
-  } catch (error) {
-    console.warn("Speech Synthesis blocked.", error);
-  }
-}
-
-function speakText(text) {
-  speakTextWithVenice(text);
-}
-
-AFRAME.registerComponent('vr-voice-greeter', {
-  init: function () {
-    this.el.addEventListener('enter-vr', () => {
-      if (!window.micInitialized) {
-        speakText("Warning. Microphone not initialized. Please exit VR and click the button, or use text mode.");
-      } else {
-        speakText("Audio systems nominal. Hold trigger to speak. Press grip button to move. Web Speech not available on Quest - use text prompts.");
-      }
-    });
-  }
-});
-
-AFRAME.registerComponent('quantum-tether', {
-  init: function () {
-    this.el.addEventListener('gripdown', () => {
-      const raycaster = this.el.components.raycaster;
-      if (raycaster && raycaster.intersections.length > 0) {
-        const hitPoint = raycaster.intersections[0].point;
-        const rig = document.querySelector('#rig');
-        const targetPos = `${hitPoint.x} 0 ${hitPoint.z}`;
-        rig.setAttribute('animation__move', `property: position; to: ${targetPos}; dur: 600; easing: easeOutExpo`);
-      }
-    });
-  }
-});
-
-AFRAME.registerComponent('audio-ai-node', {
-  schema: {
-    type: { type: 'string', default: 'oracle' },
-    baseColor: { type: 'string', default: '#B700FF' }
-  },
-  init: function () {
-    this.isFetching = false;
-    this.mediaRecorder = null;
-    this.audioChunks = [];
-
-    this.textDisplay = document.querySelector('#ui-text-board');
-    this.skyEl = document.querySelector('#vr-sky');
-    this.spawnContainer = document.querySelector('#spawned-objects');
-    this.particleContainer = document.querySelector('#particle-container');
-    this.sceneEl = document.querySelector('a-scene');
-    this.ambientLight = document.querySelector('#ambient-light');
-
-    // Check if Web Speech API is available
-    this.speechRecognitionAvailable = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-
-    this.el.addEventListener('mousedown', async () => {
-      if (this.isFetching) return;
-
-      // Desktop mode - use text input
-      if (!this.sceneEl.is('vr-mode')) {
-        const userText = prompt(`Desktop Preview Mode:\nType your ${this.data.type} vision to test the AI:`);
-        if (userText && userText.trim() !== "") {
-          this.isFetching = true;
-          this.el.setAttribute('material', 'emissive', '#FFFFFF');
-          this.textDisplay.setAttribute('value', `⚙️ Processing Text:\n"${userText}"`);
-          speakText("Processing text prompt.");
-
-          if (this.data.type === 'oracle') {
-            await this.processOracleText(userText);
-          } else {
-            await this.processRealityText(userText);
-          }
-        }
-        return;
-      }
-
-      // VR Mode - Quest doesn't support Web Speech, so use text input
-      if (!this.speechRecognitionAvailable) {
-        this.showTextInputDialog();
-        return;
-      }
-
-      // Try speech recognition if available
-      if (!window.micInitialized) {
-        this.textDisplay.setAttribute('value', '⚠️ Mic not initialized.\nExit VR and click the 2D button.');
-        return;
-      }
-
-      this.el.setAttribute('material', 'emissive', '#FF0000');
-      this.el.setAttribute('scale', '1.2 1.2 1.2');
-      this.textDisplay.setAttribute('value', `🎙️ Recording ${this.data.type.toUpperCase()}...\n(Release trigger to send)`);
-      this.audioChunks = [];
-      this.mediaRecorder = new MediaRecorder(window.globalAudioStream);
-
-      this.mediaRecorder.ondataavailable = e => {
-        if (e.data.size > 0) this.audioChunks.push(e.data);
-      };
-
-      this.mediaRecorder.onstop = async () => {
-        this.isFetching = true;
-        this.el.setAttribute('material', 'emissive', '#FFFFFF');
-        this.textDisplay.setAttribute('value', '⚙️ Processing Audio...\n(Sending to Venice AI)');
-
-        const audioBlob = new Blob(this.audioChunks, { type: this.mediaRecorder.mimeType || 'audio/webm' });
-
-        if (audioBlob.size === 0) {
-          this.textDisplay.setAttribute('value', '⚠️ Audio recording failed (0 bytes).\nUsing text mode...');
-          this.showTextInputDialog();
-          return;
-        }
-
-        await this.attemptTranscriptionFallback();
-      };
-
-      this.mediaRecorder.start();
-    });
-
-    this.el.addEventListener('mouseup', () => {
-      if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
-        this.el.setAttribute('scale', '1 1 1');
-        this.mediaRecorder.stop();
-      }
-    });
-  },
-
-  showTextInputDialog: function() {
-    // Create a simple text input overlay for VR
-    const existing = document.getElementById('vr-text-input');
-    if (existing) existing.remove();
-
-    const overlay = document.createElement('div');
-    overlay.id = 'vr-text-input';
-    overlay.style.cssText = `
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background: rgba(0,0,0,0.9);
-      border: 2px solid ${this.data.type === 'oracle' ? '#B700FF' : '#00CCFF'};
-      padding: 20px;
-      border-radius: 10px;
-      z-index: 1000;
-      text-align: center;
-    `;
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Audio-Native Split-Reality AI – Meta Quest VR (Venice Edition)</title>
     
-    overlay.innerHTML = `
-      <h3 style="color: ${this.data.type === 'oracle' ? '#B700FF' : '#00CCFF'}; margin-top: 0;">
-        ${this.data.type === 'oracle' ? '🔮 Ask the Oracle' : '🌌 Shape Reality'}
-      </h3>
-      <p style="color: white;">Type your vision:</p>
-      <input type="text" id="vr-input-field" style="width: 300px; padding: 10px; font-size: 16px;" 
-        placeholder="${this.data.type === 'oracle' ? 'What is the meaning of...' : 'A futuristic city...'}">
-      <br><br>
-      <button id="vr-submit-btn" style="padding: 10px 20px; font-size: 16px; cursor: pointer;">Submit</button>
-      <button id="vr-cancel-btn" style="padding: 10px 20px; font-size: 16px; cursor: pointer; margin-left: 10px;">Cancel</button>
-      <br><br>
-      <button id="vr-random-btn" style="padding: 10px 20px; font-size: 14px; cursor: pointer; background: #333; color: white; border: 1px solid #666;">
-        🎲 Random Vision
-      </button>
-    `;
-    
-    document.body.appendChild(overlay);
-    
-    const inputField = document.getElementById('vr-input-field');
-    const submitBtn = document.getElementById('vr-submit-btn');
-    const cancelBtn = document.getElementById('vr-cancel-btn');
-    const randomBtn = document.getElementById('vr-random-btn');
-    
-    inputField.focus();
-    
-    const cleanup = () => {
-      if (document.body.contains(overlay)) {
-        document.body.removeChild(overlay);
-      }
-    };
-    
-    submitBtn.onclick = () => {
-      const text = inputField.value.trim();
-      if (text) {
-        cleanup();
-        this.isFetching = true;
-        this.el.setAttribute('material', 'emissive', '#FFFFFF');
-        this.textDisplay.setAttribute('value', `⚙️ Processing:\n"${text}"`);
-        speakText("Processing your vision.");
+    <script src="https://aframe.io/releases/1.6.0/aframe.min.js" crossorigin="anonymous"></script>
+    <script>
+        // ==========================================
+        // VENICE AI CONFIGURATION - HARDWIRED
+        // ==========================================
+        const VENICE_API_KEY = "VENICE_INFERENCE_KEY_9ko3LqoOWUN4ZCLx_HSD1LCGFXM957xgknxx1QejS8";
+        const VENICE_BASE_URL = "https://api.venice.ai/api/v1";
         
-        if (this.data.type === 'oracle') {
-          this.processOracleText(text);
-        } else {
-          this.processRealityText(text);
-        }
-      }
-    };
-    
-    cancelBtn.onclick = () => {
-      cleanup();
-      this.resetNode();
-    };
-    
-    randomBtn.onclick = () => {
-      cleanup();
-      this.isFetching = true;
-      this.attemptAutoVisionFallback();
-    };
-    
-    inputField.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') submitBtn.click();
-    });
-  },
-
-  attemptTranscriptionFallback: async function() {
-    try {
-      await new Promise(res => setTimeout(res, 500));
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SpeechRecognition) {
-        throw new Error("Transcription API not supported on this firmware.");
-      }
-
-      const recognition = new SpeechRecognition();
-      recognition.lang = 'en-US';
-      recognition.continuous = false;
-      recognition.interimResults = false;
-      recognition.maxAlternatives = 1;
-
-      this.textDisplay.setAttribute('value', '🎙️ Speak now (Transcribing)...');
-      speakText("Speak your request for transcription.");
-
-      const text = await new Promise((resolve, reject) => {
-        recognition.onresult = (event) => resolve(event.results[0][0].transcript);
-        recognition.onerror = (event) => reject(event.error);
-        recognition.start();
-      });
-
-      this.textDisplay.setAttribute('value', `⚙️ Processing Text:\n"${text}"`);
-
-      if (this.data.type === 'oracle') {
-        await this.processOracleText(text);
-      } else {
-        await this.processRealityText(text);
-      }
-    } catch (e) {
-      console.error("Transcription Fallback Failed:", e);
-      this.textDisplay.setAttribute('value', '⚠️ Transcription not available.\nUse text input...');
-      this.showTextInputDialog();
-    }
-  },
-
-  attemptAutoVisionFallback: async function() {
-    try {
-      await new Promise(res => setTimeout(res, 500));
-
-      if (this.data.type === 'oracle') {
-        const fallbacks = [
-          "What is the meaning of the digital void?",
-          "Show me the geometric truth.",
-          "I seek cybernetic enlightenment."
-        ];
-        await this.processOracleText(fallbacks[Math.floor(Math.random() * fallbacks.length)]);
-      } else {
-        const fallbacks = [
-          "A bioluminescent alien forest at night",
-          "A vast futuristic cyberpunk metropolis",
-          "A serene floating island in the sky",
-          "An infinite retro neon synthwave grid"
-        ];
-        await this.processRealityText(fallbacks[Math.floor(Math.random() * fallbacks.length)]);
-      }
-    } catch (e) {
-      this.textDisplay.setAttribute('value', `⚠️ Total Failure:\n${e.message || "Unknown API Error"}`);
-      this.resetNode();
-    }
-  },
-
-  processOracleText: async function(text) {
-    try {
-      const chatResponse = await fetchWithRetry(`${VENICE_BASE_URL}/chat/completions`, { 
-        method: 'POST', 
-        headers: { 
-          'Authorization': `Bearer ${VENICE_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b',
-          messages: [
-            {
-              role: 'system',
-              content: `You are a mystical Oracle in VR. The user says: "${text}".
-Provide a short cryptic piece of wisdom (2-3 sentences).
-Then describe 2-4 floating 3D objects as abstract visual representations.
-Return ONLY valid JSON in this exact format:
-{
-  "wisdom": "your cryptic wisdom here",
-  "objects": [
-    {
-      "shape": "box|sphere|cylinder|cone|torus|dodecahedron",
-      "colorHex": "#RRGGBB",
-      "materialType": "neon|metallic|glass|matte",
-      "scale": 0.5-2.0,
-      "x": -15 to 15,
-      "y": 0 to 12,
-      "z": -2 to -18,
-      "animDuration": 3000-8000
-    }
-  ]
-}`
-            },
-            { role: 'user', content: text }
-          ],
-          temperature: 0.9
-        })
-      });
-
-      const aiResponse = chatResponse.choices[0].message.content;
-
-      let data;
-      try {
-        const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
-        data = JSON.parse(jsonMatch ? jsonMatch[0] : aiResponse);
-      } catch (e) {
-        data = {
-          wisdom: "The digital void whispers secrets beyond comprehension.",
-          objects: this.generateFallbackObjects()
-        };
-      }
-
-      this.executeOracleData(data);
-
-    } catch (error) {
-      console.error("Oracle processing error:", error);
-      this.textDisplay.setAttribute('value', `⚠️ API Error: ${error.message}`);
-      this.resetNode();
-    }
-  },
-
-  executeOracleData: function(data) {
-    if (data.objects && Array.isArray(data.objects)) {
-      data.objects.forEach(obj => this.spawnObject(obj));
-    }
-    this.textDisplay.setAttribute('value', `🔮 Oracle Says: 🔮\n${data.wisdom}`);
-    speakText(data.wisdom);
-    this.resetNode();
-  },
-
-  generateFallbackObjects: function() {
-    const shapes = ['box', 'sphere', 'cylinder', 'torus', 'dodecahedron'];
-    const colors = ['#B700FF', '#00CCFF', '#FF0055', '#FFE600', '#00FF99'];
-    const materials = ['neon', 'metallic', 'glass', 'matte'];
-
-    return Array.from({length: 3}, () => ({
-      shape: shapes[Math.floor(Math.random() * shapes.length)],
-      colorHex: colors[Math.floor(Math.random() * colors.length)],
-      materialType: materials[Math.floor(Math.random() * materials.length)],
-      scale: 0.5 + Math.random() * 1.5,
-      x: (Math.random() - 0.5) * 30,
-      y: Math.random() * 12,
-      z: -2 - Math.random() * 16,
-      animDuration: 3000 + Math.random() * 5000
-    }));
-  },
-
-  processRealityText: async function(text) {
-    try {
-      this.textDisplay.setAttribute('value', `🌌 Consulting Venice AI...\n"${text}"`);
-
-      const chatResponse = await fetchWithRetry(`${VENICE_BASE_URL}/chat/completions`, { 
-        method: 'POST', 
-        headers: { 
-          'Authorization': `Bearer ${VENICE_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b',
-          messages: [
-            {
-              role: 'system',
-              content: `You are a reality architect in VR. The user envisions: "${text}".
-Create a vivid image generation prompt and atmospheric parameters.
-Return ONLY valid JSON in this exact format:
-{
-  "imagePrompt": "A highly detailed immersive scene: [expanded description], equirectangular 360 panorama, seamless, cinematic lighting, 8k, photorealistic, VR environment",
-  "ambientColorHex": "#444444",
-  "fogColorHex": "#000510",
-  "fogDensity": 0.02-0.15,
-  "particleColorHex": "#RRGGBB",
-  "manifesto": "10-word description of the vision"
-}`
-            },
-            { role: 'user', content: text }
-          ],
-          temperature: 0.8
-        })
-      });
-
-      const aiResponse = chatResponse.choices[0].message.content;
-
-      let envData;
-      try {
-        const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
-        envData = JSON.parse(jsonMatch ? jsonMatch[0] : aiResponse);
-      } catch (e) {
-        envData = {
-          imagePrompt: `A highly detailed immersive scene: ${text}, equirectangular 360 panorama, seamless, cinematic lighting, 8k, photorealistic, VR environment`,
-          ambientColorHex: "#444444",
-          fogColorHex: "#000510",
-          fogDensity: 0.05,
-          particleColorHex: "#B700FF",
-          manifesto: "Reality transformed by digital dreams"
-        };
-      }
-
-      await this.executeRealityData(envData);
-
-    } catch (error) {
-      console.error("Reality processing error:", error);
-      this.textDisplay.setAttribute('value', `⚠️ API Error: ${error.message}`);
-      this.resetNode();
-    }
-  },
-
-  executeRealityData: async function(envData) {
-    this.textDisplay.setAttribute('value', `🌌 Forging Reality...\n"${envData.manifesto}"`);
-    speakText(`Manifesting: ${envData.manifesto}`);
-
-    try {
-      // Check cache first
-      let imageUrl = getFromCache(envData.imagePrompt);
-      
-      if (!imageUrl) {
-        // Not in cache, call API
-        const imgResponse = await fetchWithRetry(`${VENICE_BASE_URL}/image/generate`, { 
-          method: 'POST', 
-          headers: { 
-            'Authorization': `Bearer ${VENICE_API_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            model: 'flux-2-pro',
-            prompt: envData.imagePrompt,
-            width: 1024,
-            height: 512,
-            seed: Math.floor(Math.random() * 1000000),
-            num_inference_steps: 30,
-            guidance_scale: 7.5
-          })
+        window.micInitialized = false;
+        window.globalAudioStream = null;
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            const btn = document.getElementById('init-mic-btn');
+            if(btn) {
+                btn.addEventListener('click', async () => {
+                    btn.innerText = "Requesting Microphone...";
+                    try {
+                        window.globalAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                        window.micInitialized = true;
+                        btn.innerText = "🎤 Mic Ready! You can enter VR.";
+                        btn.style.backgroundColor = "#00FF99";
+                        btn.style.color = "#000";
+                    } catch (err) {
+                        console.error("Mic init error:", err);
+                        btn.innerText = "⚠️ Mic Access Denied";
+                        btn.style.backgroundColor = "#FF0055";
+                    }
+                });
+            }
+            
+            if (window.self !== window.top) {
+                const breakoutBtn = document.createElement('button');
+                breakoutBtn.innerText = "🚀 Open in New Tab (Required for VR)";
+                breakoutBtn.id = "breakout-btn";
+                breakoutBtn.onclick = () => window.open(window.location.href, '_blank');
+                document.getElementById('vr-ui-overlay').appendChild(breakoutBtn);
+            }
         });
-
-        console.log("Venice API Response:", imgResponse);
-
-        // Handle multiple response formats from Venice API
-        if (imgResponse.image_url) {
-          // Single direct URL
-          imageUrl = imgResponse.image_url;
-        } else if (imgResponse.images && imgResponse.images.length > 0) {
-          // Array of images (base64 or URL)
-          const img = imgResponse.images[0];
-          if (typeof img === 'string') {
-            // Direct string (base64 or URL)
-            imageUrl = img;
-          } else if (img.url) {
-            imageUrl = img.url;
-          } else if (img.b64_json) {
-            imageUrl = `data:image/png;base64,${img.b64_json}`;
-          }
-        } else if (imgResponse.data && imgResponse.data.length > 0) {
-          // OpenAI format
-          const img = imgResponse.data[0];
-          if (img.url) {
-            imageUrl = img.url;
-          } else if (img.b64_json) {
-            imageUrl = `data:image/png;base64,${img.b64_json}`;
-          }
+        
+        async function fetchWithRetry(url, options, retries = 5) {
+            const delays = [1000, 2000, 4000, 8000, 16000];
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (!response.ok) {
+                        const errorData = await response.text();
+                        throw new Error(`HTTP error! Status: ${response.status}, Details: ${errorData}`);
+                    }
+                    return await response.json();
+                } catch (error) {
+                    if (i === retries - 1) throw error;
+                    await new Promise(res => setTimeout(res, delays[i]));
+                }
+            }
         }
-
-        if (!imageUrl) {
-          console.error("Could not extract image from response:", imgResponse);
-          throw new Error("No image in Venice API response - format unknown");
+        
+        function blobToBase64(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result.split(',')[1]);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
         }
-
-        // Ensure it's a proper data URL if it's base64
-        if (!imageUrl.startsWith('data:') && !imageUrl.startsWith('http')) {
-          imageUrl = `data:image/png;base64,${imageUrl}`;
+        
+        async function speakTextWithVenice(text) {
+            try {
+                const response = await fetch(`${VENICE_BASE_URL}/audio/speech`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${VENICE_API_KEY}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: "tts-1",
+                        input: text,
+                        voice: "alloy"
+                    })
+                });
+                
+                if (!response.ok) throw new Error("TTS API failed");
+                
+                const audioBlob = await response.blob();
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio(audioUrl);
+                audio.play();
+                
+            } catch (error) {
+                console.warn("Venice TTS failed, using fallback:", error);
+                speakTextFallback(text);
+            }
         }
-
-        // Save to cache
-        saveToCache(envData.imagePrompt, imageUrl);
-      }
-
-      // Preload and validate image
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      
-      await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = () => reject(new Error("Image failed to load"));
-        img.src = imageUrl;
-      });
-
-      // Apply to sky
-      this.skyEl.setAttribute('src', imageUrl);
-      this.skyEl.removeAttribute('color');
-      
-      // Update environment
-      this.ambientLight.setAttribute('light', 'color', envData.ambientColorHex);
-      this.sceneEl.setAttribute('fog', `type: exponential; color: ${envData.fogColorHex}; density: ${envData.fogDensity}`);
-      this.spawnParticles(envData.particleColorHex);
-
-      this.textDisplay.setAttribute('value', '🌌 Reality Shift Complete 🌌');
-
-    } catch (error) {
-      console.error("Image generation error:", error);
-      this.textDisplay.setAttribute('value', `⚠️ Image Gen Failed: ${error.message}`);
-    }
-
-    this.resetNode();
-  },
-
-  resetNode: function() {
-    this.isFetching = false;
-    this.el.setAttribute('material', 'emissive', this.data.baseColor);
-    setTimeout(() => {
-      if (!this.isFetching) {
-        this.textDisplay.setAttribute('value', "🟣 Left Sphere: Oracle / Objects\n🔵 Right Sphere: Reality / 360 Sky\n🕹️ Hold GRIP to move\n💬 Click sphere to type (Quest)");
-      }
-    }, 5000);
-  },
-
-  spawnObject: function(obj) {
-    const el = document.createElement('a-entity');
-
-    let geometryStr = `primitive: ${obj.shape}`;
-    if (obj.shape === 'torus') {
-      geometryStr += '; radius: 0.3; radiusTubular: 0.05';
-    } else if (obj.shape === 'dodecahedron') {
-      geometryStr += '; radius: 0.4';
-    }
-
-    el.setAttribute('geometry', geometryStr);
-
-    if (obj.materialType === 'neon') {
-      el.setAttribute('material', `color: ${obj.colorHex}; shader: flat;`);
-      const aura = document.createElement('a-entity');
-      aura.setAttribute('geometry', geometryStr);
-      aura.setAttribute('material', `color: ${obj.colorHex}; shader: flat; transparent: true; opacity: 0.3; blending: additive; side: back`);
-      aura.setAttribute('scale', '1.15 1.15 1.15');
-      el.appendChild(aura);
-    } else if (obj.materialType === 'glass') {
-      el.setAttribute('material', `color: ${obj.colorHex}; metalness: 0.1; roughness: 0.1; transparent: true; opacity: 0.4; side: double`);
-    } else if (obj.materialType === 'metallic') {
-      el.setAttribute('material', `color: ${obj.colorHex}; metalness: 0.9; roughness: 0.1`);
-    } else {
-      el.setAttribute('material', `color: ${obj.colorHex}; metalness: 0.1; roughness: 0.9`);
-    }
-
-    el.setAttribute('position', `${obj.x} ${obj.y} ${obj.z}`);
-    el.setAttribute('scale', `${obj.scale} ${obj.scale} ${obj.scale}`);
-    el.setAttribute('animation', `property: rotation; to: ${Math.random()*360} ${Math.random()*360} ${Math.random()*360}; loop: true; dur: ${obj.animDuration}; easing: linear`);
-    el.setAttribute('animation__float', `property: position; dir: alternate; to: ${obj.x} ${obj.y + 0.5} ${obj.z}; loop: true; dur: ${obj.animDuration * 1.5}; easing: easeInOutSine`);
-
-    this.spawnContainer.appendChild(el);
-  },
-
-  spawnParticles: function(colorHex) {
-    this.particleContainer.innerHTML = '';
-    for (let i = 0; i < 60; i++) {
-      const particle = document.createElement('a-entity');
-      const size = Math.random() * 0.1 + 0.02;
-      particle.setAttribute('geometry', `primitive: plane; height: ${size}; width: ${size}`);
-      particle.setAttribute('material', `color: ${colorHex}; transparent: true; opacity: 0.6; blending: additive`);
-
-      const x = (Math.random() - 0.5) * 20;
-      const y = Math.random() * 10;
-      const z = (Math.random() - 0.5) * 20;
-
-      particle.setAttribute('position', `${x} ${y} ${z}`);
-      particle.setAttribute('look-at', '#rig');
-      particle.setAttribute('animation', `property: position; to: ${x} ${y + 2} ${z}; loop: true; dur: ${Math.random() * 10000 + 5000}; easing: linear`);
-
-      this.particleContainer.appendChild(particle);
-    }
-  }
-});
-</script>
-
-<style>
-body {
-  margin: 0;
-  padding: 0;
-  background-color: #000;
-  font-family: sans-serif;
-}
-
-#vr-ui-overlay {
-  position: absolute;
-  bottom: 20px;
-  left: 50%;
-  transform: translateX(-50%);
-  color: white;
-  z-index: 100;
-  text-align: center;
-  background: rgba(0, 0, 0, 0.7);
-  padding: 15px 25px;
-  border-radius: 12px;
-  border: 1px solid #B700FF;
-  pointer-events: none;
-}
-
-#init-mic-btn {
-  margin-top: 10px;
-  padding: 10px 20px;
-  font-size: 1em;
-  font-weight: bold;
-  color: white;
-  background-color: #B700FF;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  pointer-events: auto;
-  transition: all 0.3s ease;
-  width: 100%;
-  box-sizing: border-box;
-}
-
-#init-mic-btn:hover {
-  background-color: #d133ff;
-  transform: scale(1.05);
-}
-
-#breakout-btn {
-  margin-top: 10px;
-  padding: 10px 20px;
-  font-size: 1em;
-  font-weight: bold;
-  color: #000;
-  background-color: #00CCFF;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  pointer-events: auto;
-  transition: all 0.3s ease;
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-}
-
-#breakout-btn:hover {
-  background-color: #00e6ff;
-  transform: scale(1.05);
-}
-
-#api-status {
-  margin-top: 10px;
-  font-size: 0.8em;
-  color: #FFE600;
-}
-
-#vr-text-input {
-  font-family: sans-serif;
-}
-</style>
+        
+        function speakTextFallback(text) {
+            try {
+                if ('speechSynthesis' in window) {
+                    const synth = window.speechSynthesis;
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    let voices = synth.getVoices();
+                    
+                    const playVoice = () => {
+                        const femaleVoice = voices.find(voice => 
+                            voice.name.toLowerCase().includes('female') || 
+                            voice.name.toLowerCase().includes('zira') || 
+                            voice.name.toLowerCase().includes('samantha') ||
+                            voice.name.toLowerCase().includes('victoria') ||
+                            voice.name.toLowerCase().includes('karen')
+                        );
+                        if (femaleVoice) utterance.voice = femaleVoice;
+                        utterance.pitch = 1.2; 
+                        utterance.rate = 0.95;
+                        synth.speak(utterance);
+                    };
+                    
+                    if (voices.length === 0) {
+                        synth.onvoiceschanged = () => { voices = synth.getVoices(); playVoice(); };
+                    } else {
+                        playVoice();
+                    }
+                }
+            } catch (error) {
+                console.warn("Speech Synthesis blocked.", error);
+            }
+        }
+        
+        function speakText(text) {
+            speakTextWithVenice(text);
+        }
+        
+        AFRAME.registerComponent('vr-voice-greeter', {
+            init: function () {
+                this.el.addEventListener('enter-vr', () => {
+                    if (!window.micInitialized) {
+                        speakText("Warning. Microphone not initialized. Please exit VR and click the button.");
+                    } else {
+                        speakText("Audio systems nominal. Hold trigger to speak. Press grip button to move.");
+                    }
+                });
+            }
+        });
+        
+        AFRAME.registerComponent('quantum-tether', {
+            init: function () {
+                this.el.addEventListener('gripdown', () => {
+                    const raycaster = this.el.components.raycaster;
+                    if (raycaster && raycaster.intersections.length > 0) {
+                        const hitPoint = raycaster.intersections[0].point;
+                        const rig = document.querySelector('#rig');
+                        const targetPos = `${hitPoint.x} 0 ${hitPoint.z}`;
+                        rig.setAttribute('animation__move', `property: position; to: ${targetPos}; dur: 600; easing: easeOutExpo`);
+                    }
+                });
+            }
+        });
+        
+        AFRAME.registerComponent('audio-ai-node', {
+            schema: {
+                type: { type: 'string', default: 'oracle' },
+                baseColor: { type: 'string', default: '#B700FF' }
+            },
+            init: function () {
+                this.isFetching = false;
+                this.mediaRecorder = null;
+                this.audioChunks = [];
+                
+                this.textDisplay = document.querySelector('#ui-text-board');
+                this.skyEl = document.querySelector('#vr-sky');
+                this.spawnContainer = document.querySelector('#spawned-objects');
+                this.particleContainer = document.querySelector('#particle-container');
+                this.sceneEl = document.querySelector('a-scene');
+                this.ambientLight = document.querySelector('#ambient-light');
+                
+                this.el.addEventListener('mousedown', async () => {
+                    if (this.isFetching) return;
+                    
+                    if (!this.sceneEl.is('vr-mode') && !window.micInitialized) {
+                        const userText = prompt(`Desktop Preview Mode:\nType your ${this.data.type} vision to test the AI:`);
+                        if (userText && userText.trim() !== "") {
+                            this.isFetching = true;
+                            this.el.setAttribute('material', 'emissive', '#FFFFFF');
+                            this.textDisplay.setAttribute('value', `⚙️ Processing Text:\n"${userText}"`);
+                            speakText("Processing text prompt.");
+                            
+                            if (this.data.type === 'oracle') {
+                                await this.processOracleText(userText);
+                            } else {
+                                await this.processRealityText(userText);
+                            }
+                        }
+                        return;
+                    }
+                    
+                    if (!window.micInitialized) {
+                        this.textDisplay.setAttribute('value', '⚠️ Mic not initialized.\nExit VR and click the 2D button.');
+                        return;
+                    }
+                    
+                    this.el.setAttribute('material', 'emissive', '#FF0000');
+                    this.el.setAttribute('scale', '1.2 1.2 1.2');
+                    this.textDisplay.setAttribute('value', `🎙️ Recording ${this.data.type.toUpperCase()}...\n(Release trigger to send)`);
+                    this.audioChunks = [];
+                    this.mediaRecorder = new MediaRecorder(window.globalAudioStream);
+                    
+                    this.mediaRecorder.ondataavailable = e => { 
+                        if (e.data.size > 0) this.audioChunks.push(e.data); 
+                    };
+                    
+                    this.mediaRecorder.onstop = async () => {
+                        this.isFetching = true;
+                        this.el.setAttribute('material', 'emissive', '#FFFFFF');
+                        this.textDisplay.setAttribute('value', `⚙️ Processing Audio...\n(Sending to Venice AI)`);
+                        
+                        const audioBlob = new Blob(this.audioChunks, { type: this.mediaRecorder.mimeType || 'audio/webm' });
+                        
+                        if (audioBlob.size === 0) {
+                            this.textDisplay.setAttribute('value', `⚠️ Audio recording failed (0 bytes).`);
+                            this.resetNode();
+                            return;
+                        }
+                        
+                        await this.attemptTranscriptionFallback();
+                    };
+                    
+                    this.mediaRecorder.start();
+                });
+                
+                this.el.addEventListener('mouseup', () => {
+                    if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+                        this.el.setAttribute('scale', '1 1 1');
+                        this.mediaRecorder.stop();
+                    }
+                });
+            },
+            
+            attemptTranscriptionFallback: async function() {
+                try {
+                    await new Promise(res => setTimeout(res, 1500));
+                    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                    if (!SpeechRecognition) throw new Error("Transcription API not supported on this firmware.");
+                    
+                    const recognition = new SpeechRecognition();
+                    recognition.lang = 'en-US';
+                    recognition.continuous = false;
+                    recognition.interimResults = false;
+                    recognition.maxAlternatives = 1;
+                    
+                    this.textDisplay.setAttribute('value', `🎙️ Speak now (Transcribing)...`);
+                    speakText("Speak your request for transcription.");
+                    
+                    const text = await new Promise((resolve, reject) => {
+                        recognition.onresult = (event) => resolve(event.results[0][0].transcript);
+                        recognition.onerror = (event) => reject(event.error);
+                        recognition.start();
+                    });
+                    
+                    this.textDisplay.setAttribute('value', `⚙️ Processing Text:\n"${text}"`);
+                    
+                    if (this.data.type === 'oracle') {
+                        await this.processOracleText(text);
+                    } else {
+                        await this.processRealityText(text);
+                    }
+                } catch (e) {
+                    console.error("Transcription Fallback Failed:", e);
+                    this.textDisplay.setAttribute('value', `⚠️ Transcription failed.\nExecuting Auto-Vision...`);
+                    await this.attemptAutoVisionFallback();
+                }
+            },
+            
+            attemptAutoVisionFallback: async function() {
+                try {
+                    await new Promise(res => setTimeout(res, 2000));
+                    
+                    if (this.data.type === 'oracle') {
+                        const fallbacks = [
+                            "What is the meaning of the digital void?",
+                            "Show me the geometric truth.",
+                            "I seek cybernetic enlightenment."
+                        ];
+                        await this.processOracleText(fallbacks[Math.floor(Math.random() * fallbacks.length)]);
+                    } else {
+                        const fallbacks = [
+                            "A bioluminescent alien forest at night",
+                            "A vast futuristic cyberpunk metropolis",
+                            "A serene floating island in the sky",
+                            "An infinite retro neon synthwave grid"
+                        ];
+                        await this.processRealityText(fallbacks[Math.floor(Math.random() * fallbacks.length)]);
+                    }
+                } catch (e) {
+                    this.textDisplay.setAttribute('value', `⚠️ Total Failure:\n${e.message || "Unknown API Error"}`);
+                    this.resetNode();
+                }
+            },
+            
+            processOracleText: async function(text) {
+                try {
+                    const chatResponse = await fetchWithRetry(`${VENICE_BASE_URL}/chat/completions`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${VENICE_API_KEY}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            model: 'llama-3.3-70b',
+                            messages: [
+                                {
+                                    role: 'system',
+                                    content: `You are a mystical Oracle in VR. The user says: "${text}". 
+                                    Provide a short cryptic piece of wisdom (2-3 sentences). 
+                                    Then describe 2-4 floating 3D objects as abstract visual representations.
+                                    Return ONLY valid JSON in this exact format:
+                                    {
+                                        "wisdom": "your cryptic wisdom here",
+                                        "objects": [
+                                            {
+                                                "shape": "box|sphere|cylinder|cone|torus|dodecahedron",
+                                                "colorHex": "#RRGGBB",
+                                                "materialType": "neon|metallic|glass|matte",
+                                                "scale": 0.5-2.0,
+                                                "x": -15 to 15,
+                                                "y": 0 to 12,
+                                                "z": -2 to -18,
+                                                "animDuration": 3000-8000
+                                            }
+                                        ]
+                                    }`
+                                },
+                                { role: 'user', content: text }
+                            ],
+                            temperature: 0.9
+                        })
+                    });
+                    
+                    const aiResponse = chatResponse.choices[0].message.content;
+                    
+                    let data;
+                    try {
+                        const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+                        data = JSON.parse(jsonMatch ? jsonMatch[0] : aiResponse);
+                    } catch (e) {
+                        data = {
+                            wisdom: "The digital void whispers secrets beyond comprehension.",
+                            objects: this.generateFallbackObjects()
+                        };
+                    }
+                    
+                    this.executeOracleData(data);
+                    
+                } catch (error) {
+                    console.error("Oracle processing error:", error);
+                    this.textDisplay.setAttribute('value', `⚠️ API Error: ${error.message}`);
+                    this.resetNode();
+                }
+            },
+            
+            executeOracleData: function(data) {
+                if (data.objects && Array.isArray(data.objects)) {
+                    data.objects.forEach(obj => this.spawnObject(obj));
+                }
+                this.textDisplay.setAttribute('value', `🔮 Oracle Says: 🔮\n${data.wisdom}`);
+                speakText(data.wisdom);
+                this.resetNode();
+            },
+            
+            generateFallbackObjects: function() {
+                const shapes = ['box', 'sphere', 'cylinder', 'torus', 'dodecahedron'];
+                const colors = ['#B700FF', '#00CCFF', '#FF0055', '#FFE600', '#00FF99'];
+                const materials = ['neon', 'metallic', 'glass', 'matte'];
+                
+                return Array.from({length: 3}, () => ({
+                    shape: shapes[Math.floor(Math.random() * shapes.length)],
+                    colorHex: colors[Math.floor(Math.random() * colors.length)],
+                    materialType: materials[Math.floor(Math.random() * materials.length)],
+                    scale: 0.5 + Math.random() * 1.5,
+                    x: (Math.random() - 0.5) * 30,
+                    y: Math.random() * 12,
+                    z: -2 - Math.random() * 16,
+                    animDuration: 3000 + Math.random() * 5000
+                }));
+            },
+            
+            processRealityText: async function(text) {
+                try {
+                    this.textDisplay.setAttribute('value', `🌌 Consulting Venice AI...\n"${text}"`);
+                    
+                    const chatResponse = await fetchWithRetry(`${VENICE_BASE_URL}/chat/completions`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${VENICE_API_KEY}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            model: 'llama-3.3-70b',
+                            messages: [
+                                {
+                                    role: 'system',
+                                    content: `You are a reality architect in VR. The user envisions: "${text}".
+                                    Create a vivid image generation prompt and atmospheric parameters.
+                                    Return ONLY valid JSON in this exact format:
+                                    {
+                                        "imagePrompt": "A highly detailed immersive scene: [expanded description], cinematic lighting, 8k, photorealistic, VR environment",
+                                        "ambientColorHex": "#444444",
+                                        "fogColorHex": "#000510",
+                                        "fogDensity": 0.02-0.15,
+                                        "particleColorHex": "#RRGGBB",
+                                        "manifesto": "10-word description of the vision"
+                                    }`
+                                },
+                                { role: 'user', content: text }
+                            ],
+                            temperature: 0.8
+                        })
+                    });
+                    
+                    const aiResponse = chatResponse.choices[0].message.content;
+                    
+                    let envData;
+                    try {
+                        const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+                        envData = JSON.parse(jsonMatch ? jsonMatch[0] : aiResponse);
+                    } catch (e) {
+                        envData = {
+                            imagePrompt: `A highly detailed immersive scene: ${text}, cinematic lighting, 8k, photorealistic, VR environment`,
+                            ambientColorHex: "#444444",
+                            fogColorHex: "#000510",
+                            fogDensity: 0.05,
+                            particleColorHex: "#B700FF",
+                            manifesto: "Reality transformed by digital dreams"
+                        };
+                    }
+                    
+                    await this.executeRealityData(envData);
+                    
+                } catch (error) {
+                    console.error("Reality processing error:", error);
+                    this.textDisplay.setAttribute('value', `⚠️ API Error: ${error.message}`);
+                    this.resetNode();
+                }
+            },
+            
+            executeRealityData: async function(envData) {
+                this.textDisplay.setAttribute('value', `🌌 Forging Reality...\n"${envData.manifesto}"`);
+                speakText(`Manifesting: ${envData.manifesto}`);
+                
+                try {
+                    // FIXED: Using lustify-sdxl with correct Venice API format
+                    const imgResponse = await fetchWithRetry(`${VENICE_BASE_URL}/image/generate`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${VENICE_API_KEY}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            model: 'lustify-sdxl',
+                            prompt: envData.imagePrompt,
+                            width: 1024,
+                            height: 576,
+                            seed: Math.floor(Math.random() * 1000000),
+                            cfg_scale: 7.5,
+                            steps: 30,
+                            safe_mode: false
+                        })
+                    });
+                    
+                    let imageUrl;
+                    if (imgResponse.images && imgResponse.images.length > 0) {
+                        imageUrl = imgResponse.images[0].url || imgResponse.images[0];
+                    } else if (imgResponse.data && imgResponse.data.length > 0) {
+                        imageUrl = imgResponse.data[0].url || imgResponse.data[0].b64_json;
+                    }
+                    
+                    if (!imageUrl) {
+                        throw new Error("No image returned from Venice API");
+                    }
+                    
+                    if (imageUrl.startsWith('data:')) {
+                        this.skyEl.setAttribute('src', imageUrl);
+                    } else if (imageUrl.length > 1000) {
+                        this.skyEl.setAttribute('src', `data:image/png;base64,${imageUrl}`);
+                    } else {
+                        this.skyEl.setAttribute('src', imageUrl);
+                    }
+                    
+                    this.skyEl.removeAttribute('color');
+                    
+                    this.ambientLight.setAttribute('light', 'color', envData.ambientColorHex);
+                    this.sceneEl.setAttribute('fog', `type: exponential; color: ${envData.fogColorHex}; density: ${envData.fogDensity}`);
+                    this.spawnParticles(envData.particleColorHex);
+                    
+                    this.textDisplay.setAttribute('value', `🌌 Reality Shift Complete 🌌`);
+                    
+                } catch (error) {
+                    console.error("Image generation error:", error);
+                    this.textDisplay.setAttribute('value', `⚠️ Image Gen Failed: ${error.message}`);
+                }
+                
+                this.resetNode();
+            },
+            
+            resetNode: function() {
+                this.isFetching = false;
+                this.el.setAttribute('material', 'emissive', this.data.baseColor);
+                setTimeout(() => {
+                    if (!this.isFetching) {
+                        this.textDisplay.setAttribute('value', "🟣 Left Sphere: Oracle / Objects\n🔵 Right Sphere: Reality / 360 Sky\n🕹️ Hold GRIP to move");
+                    }
+                }, 5000);
+            },
+            
+            spawnObject: function(obj) {
+                const el = document.createElement('a-entity');
+                
+                let geometryStr = `primitive: ${obj.shape}`;
+                if (obj.shape === 'torus') {
+                    geometryStr += '; radius: 0.3; radiusTubular: 0.05';
+                } else if (obj.shape === 'dodecahedron') {
+                    geometryStr += '; radius: 0.4';
+                }
+                
+                el.setAttribute('geometry', geometryStr);
+                
+                if (obj.materialType === 'neon') {
+                    el.setAttribute('material', `color: ${obj.colorHex}; shader: flat;`);
+                    const aura = document.createElement('a-entity');
+                    aura.setAttribute('geometry', geometryStr);
+                    aura.setAttribute('material', `color: ${obj.colorHex}; shader: flat; transparent: true; opacity: 0.3; blending: additive; side: back`);
+                    aura.setAttribute('scale', '1.15 1.15 1.15');
+                    el.appendChild(aura);
+                } else if (obj.materialType === 'glass') {
+                    el.setAttribute('material', `color: ${obj.colorHex}; metalness: 0.1; roughness: 0.1; transparent: true; opacity: 0.4; side: double`);
+                } else if (obj.materialType === 'metallic') {
+                    el.setAttribute('material', `color: ${obj.colorHex}; metalness: 0.9; roughness: 0.1`);
+                } else {
+                    el.setAttribute('material', `color: ${obj.colorHex}; metalness: 0.1; roughness: 0.9`);
+                }
+                
+                el.setAttribute('position', `${obj.x} ${obj.y} ${obj.z}`);
+                el.setAttribute('scale', `${obj.scale} ${obj.scale} ${obj.scale}`);
+                el.setAttribute('animation__float', `property: position; dir: alternate; to: ${obj.x} ${obj.y + (Math.random() * 2 + 1)} ${obj.z}; loop: true; dur: ${obj.animDuration}; easing: easeInOutSine`);
+                el.setAttribute('animation__spin', `property: rotation; to: ${Math.random()*360} ${Math.random()*360} ${Math.random()*360}; loop: true; dur: ${obj.animDuration * 1.5}; easing: linear`);
+                
+                this.spawnContainer.appendChild(el);
+            },
+            
+            spawnParticles: function(colorHex) {
+                this.particleContainer.innerHTML = '';
+                for (let i = 0; i < 60; i++) {
+                    const particle = document.createElement('a-entity');
+                    const size = Math.random() * 0.1 + 0.02;
+                    particle.setAttribute('geometry', `primitive: plane; height: ${size}; width: ${size}`);
+                    particle.setAttribute('material', `shader: flat; color: ${colorHex}; transparent: true; opacity: 0.6; blending: additive`);
+                    
+                    const x = (Math.random() - 0.5) * 20;
+                    const y = Math.random() * 10;
+                    const z = (Math.random() - 0.5) * 20;
+                    
+                    particle.setAttribute('position', `${x} ${y} ${z}`);
+                    particle.setAttribute('look-at', '#rig');
+                    particle.setAttribute('animation', `property: position; to: ${x} ${y + 2} ${z}; loop: true; dur: ${Math.random() * 10000 + 5000}; easing: linear`);
+                    
+                    this.particleContainer.appendChild(particle);
+                }
+            }
+        });
+    </script>
+    
+    <style>
+        body { 
+            margin: 0; 
+            padding: 0; 
+            background-color: #000; 
+            font-family: sans-serif; 
+        }
+        
+        #vr-ui-overlay {
+            position: absolute; 
+            bottom: 20px; 
+            left: 50%; 
+            transform: translateX(-50%);
+            color: white; 
+            z-index: 100; 
+            text-align: center; 
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px 25px; 
+            border-radius: 12px; 
+            border: 1px solid #B700FF; 
+            pointer-events: none;
+        }
+        
+        #init-mic-btn {
+            margin-top: 10px; 
+            padding: 10px 20px; 
+            font-size: 1em; 
+            font-weight: bold; 
+            color: white;
+            background-color: #B700FF; 
+            border: none; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            pointer-events: auto; 
+            transition: all 0.3s ease; 
+            width: 100%; 
+            box-sizing: border-box;
+        }
+        
+        #init-mic-btn:hover { 
+            background-color: #d133ff; 
+            transform: scale(1.05); 
+        }
+        
+        #breakout-btn {
+            margin-top: 10px; 
+            padding: 10px 20px; 
+            font-size: 1em; 
+            font-weight: bold; 
+            color: #000;
+            background-color: #00CCFF; 
+            border: none; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            pointer-events: auto; 
+            transition: all 0.3s ease; 
+            display: block; 
+            width: 100%; 
+            box-sizing: border-box;
+        }
+        
+        #breakout-btn:hover { 
+            background-color: #00e6ff; 
+            transform: scale(1.05); 
+        }
+        
+        #api-status {
+            margin-top: 10px;
+            font-size: 0.8em;
+            color: #FFE600;
+        }
+    </style>
 </head>
 <body>
-<div id="vr-ui-overlay">
-  <h3>Audio-Native Reality Engine (Venice AI)</h3>
-  <p>1. Click below to allow mic access.<br>2. Put on your headset and click "VR".<br>3. On Quest: Click spheres to type text</p>
-  <button id="init-mic-btn">Initialize Microphone</button>
-  <div id="api-status">⚡ Venice API Connected</div>
-</div>
-
-<a-scene
-  vr-voice-greeter
-  renderer="antialias: false; colorManagement: true; foveationLevel: 1;"
-  fog="type: exponential; color: #000510; density: 0.05">
-
-  <a-assets>
-    <!-- Preload assets if needed -->
-  </a-assets>
-
-  <a-entity id="rig" position="0 0 0">
-    <a-camera position="0 1.6 0" look-controls="pointerLockEnabled: false">
-      <a-entity cursor="rayOrigin: mouse" raycaster="objects: .interactable"></a-entity>
-    </a-camera>
-
-    <a-entity laser-controls="hand: left" quantum-tether raycaster="objects: .interactable, .walkable; far: 50" line="color: #FF0055; opacity: 0.7"></a-entity>
-    <a-entity laser-controls="hand: right" quantum-tether raycaster="objects: .interactable, .walkable; far: 50" line="color: #00CCFF; opacity: 0.7"></a-entity>
-  </a-entity>
-
-  <a-light id="ambient-light" type="ambient" color="#444"></a-light>
-  <a-light type="point" position="0 4 0" color="#FFFFFF" intensity="0.5" distance="30"></a-light>
-
-  <a-sky id="vr-sky" color="#000510"></a-sky>
-
-  <a-plane class="walkable" position="0 0 0" rotation="-90 0 0" width="100" height="100" material="transparent: true; opacity: 0"></a-plane>
-
-  <a-sphere class="interactable" audio-ai-node="type: oracle; baseColor: #330055" position="-1.5 2.5 -4" radius="0.4"
-    material="shader: standard; color: #B700FF; metalness: 0.9; roughness: 0.1; emissive: #330055"
-    animation__float="property: position; dir: alternate; to: -1.5 2.7 -4; loop: true; dur: 3200"></a-sphere>
-
-  <a-text value="ORACLE&#10;(click to type)" position="-1.5 1.8 -4" align="center" color="#B700FF" scale="0.6 0.6 0.6"></a-text>
-
-  <a-sphere class="interactable" audio-ai-node="type: reality; baseColor: #003355" position="1.5 2.5 -4" radius="0.4"
-    material="shader: standard; color: #00CCFF; metalness: 0.9; roughness: 0.1; emissive: #003355"
-    animation__float="property: position; dir: alternate; to: 1.5 2.7 -4; loop: true; dur: 2800"></a-sphere>
-
-  <a-text value="REALITY&#10;(click to type)" position="1.5 1.8 -4" align="center" color="#00CCFF" scale="0.6 0.6 0.6"></a-text>
-
-  <a-text id="ui-text-board" value="🟣 Left Sphere: Oracle / Objects&#10;🔵 Right Sphere: Reality / 360 Sky&#10;🕹️ Hold GRIP to move&#10;💬 Click sphere to type (Quest)"
-    position="0 3.5 -5" align="center" color="#FFE600" scale="1.3 1.3 1.3"></a-text>
-
-  <a-entity id="spawned-objects"></a-entity>
-  <a-entity id="particle-container"></a-entity>
-</a-scene>
+    <div id="vr-ui-overlay">
+        <h3>Audio-Native Reality Engine (Venice AI)</h3>
+        <p>1. Click below to allow mic access.<br>2. Put on your headset and click "VR".</p>
+        <button id="init-mic-btn">Initialize Microphone</button>
+        <div id="api-status">⚡ Lustify SDXL Ready</div>
+    </div>
+    
+    <a-scene 
+        vr-voice-greeter
+        renderer="antialias: false; colorManagement: true; foveationLevel: 1;"
+        fog="type: exponential; color: #000510; density: 0.05">
+        
+        <a-entity id="rig" position="0 0 0">
+            <a-camera position="0 1.6 0" look-controls="pointerLockEnabled: false">
+                <a-entity cursor="rayOrigin: mouse" raycaster="objects: .interactable"></a-entity>
+            </a-camera>
+            
+            <a-entity laser-controls="hand: left" quantum-tether raycaster="objects: .interactable, .walkable; far: 50" line="color: #FF0055; opacity: 0.7"></a-entity>
+            <a-entity laser-controls="hand: right" quantum-tether raycaster="objects: .interactable, .walkable; far: 50" line="color: #00CCFF; opacity: 0.7"></a-entity>
+        </a-entity>
+        
+        <a-light id="ambient-light" type="ambient" color="#444"></a-light>
+        <a-light type="point" position="0 4 0" color="#FFFFFF" intensity="0.5" distance="30"></a-light>
+        
+        <a-sky id="vr-sky" color="#000510"></a-sky>
+        
+        <a-plane class="walkable" position="0 0 0" rotation="-90 0 0" width="100" height="100" material="transparent: true; opacity: 0"></a-plane>
+        
+        <a-sphere class="interactable" audio-ai-node="type: oracle; baseColor: #330055" position="-1.5 2.5 -4" radius="0.4"
+                  material="shader: standard; color: #B700FF; metalness: 0.9; roughness: 0.1; emissive: #330055"
+                  animation__float="property: position; dir: alternate; to: -1.5 2.7 -4; loop: true; dur: 3200"></a-sphere>
+        
+        <a-text value="ORACLE" position="-1.5 1.8 -4" align="center" color="#B700FF" scale="0.8 0.8 0.8"></a-text>
+        
+        <a-sphere class="interactable" audio-ai-node="type: reality; baseColor: #003355" position="1.5 2.5 -4" radius="0.4"
+                  material="shader: standard; color: #00CCFF; metalness: 0.9; roughness: 0.1; emissive: #003355"
+                  animation__float="property: position; dir: alternate; to: 1.5 2.7 -4; loop: true; dur: 2800"></a-sphere>
+        
+        <a-text value="REALITY" position="1.5 1.8 -4" align="center" color="#00CCFF" scale="0.8 0.8 0.8"></a-text>
+        
+        <a-text id="ui-text-board" value="🟣 Left Sphere: Oracle / Objects\n🔵 Right Sphere: Reality / 360 Sky\n🕹️ Hold GRIP to move" 
+                position="0 3.5 -5" align="center" color="#FFE600" scale="1.3 1.3 1.3"></a-text>
+        
+        <a-entity id="spawned-objects"></a-entity>
+        <a-entity id="particle-container"></a-entity>
+    </a-scene>
 </body>
 </html>
